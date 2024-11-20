@@ -1,0 +1,133 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+
+// Configurações Wi-Fi
+const char* ssid = "SHELDON";             // Nome da rede Wi-Fi
+const char* password = "shn108597";       // Senha da rede Wi-Fi
+
+// Configurações do MQTT Broker
+const char* mqtt_server = "192.168.15.54";
+const int mqtt_port = 1884;
+const char* mqtt_topic = "estoque/status";
+
+// Cliente Wi-Fi e MQTT
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+// Configurações dos pinos
+const int trigPin = 23;       // Pino TRIG do sensor HC-SR04
+const int echoPin = 19;       // Pino ECHO do sensor HC-SR04
+const int ledBranco = 16;     // GPIO do LED branco (estoque cheio)
+const int ledVermelho = 25;   // GPIO do LED vermelho (estoque vazio)
+
+// Distâncias medidas manualmente (em cm)
+const float distanciaCheio = 10.0; // Distância com duas caixas (estoque cheio)
+const float distanciaVazio = 30.0; // Distância com uma caixa (estoque vazio)
+
+// Variáveis globais
+long duration;
+float distance;
+String statusEstoque = "";
+
+void setup() {
+  Serial.begin(115200);
+
+  // Configuração dos pinos
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+  pinMode(ledBranco, OUTPUT);
+  pinMode(ledVermelho, OUTPUT);
+
+  // Inicializa os LEDs desligados
+  digitalWrite(ledBranco, LOW);
+  digitalWrite(ledVermelho, LOW);
+
+  // Conexão Wi-Fi
+  Serial.println("Conectando ao WiFi...");
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.println("Aguardando conexão Wi-Fi...");
+  }
+  Serial.println("WiFi conectado!");
+  Serial.print("IP do dispositivo: ");
+  Serial.println(WiFi.localIP());
+
+  // Configuração do MQTT
+  client.setServer(mqtt_server, mqtt_port);
+  conectarMQTT();
+}
+
+void loop() {
+  if (!client.connected()) {
+    conectarMQTT();
+  }
+  client.loop();
+
+  // Envia pulso TRIG
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+
+  // Lê a duração do pulso ECHO
+  duration = pulseIn(echoPin, HIGH, 40000); // Timeout de 40ms
+  distance = duration * 0.034 / 2;          // Converte duração para distância em cm
+
+  // Verifica a distância e determina o estado do estoque
+  if (distance > 0 && distance < 400) { // Faixa válida do sensor
+    Serial.print("Distância: ");
+    Serial.print(distance);
+    Serial.println(" cm");
+
+    if (distance <= distanciaCheio) {
+      // Estoque cheio (duas caixas)
+      digitalWrite(ledBranco, HIGH);  // Liga o LED branco
+      digitalWrite(ledVermelho, LOW); // Desliga o LED vermelho
+      if (statusEstoque != "Estoque cheio") {
+        statusEstoque = "Estoque cheio";
+        client.publish(mqtt_topic, statusEstoque.c_str());
+        Serial.println("Estoque cheio. LED Branco aceso.");
+      }
+    } else if (distance > distanciaCheio && distance <= distanciaVazio) {
+      // Estoque vazio (uma caixa)
+      digitalWrite(ledBranco, LOW);    // Desliga o LED branco
+      digitalWrite(ledVermelho, HIGH); // Liga o LED vermelho
+      if (statusEstoque != "Estoque vazio") {
+        statusEstoque = "Estoque vazio";
+        client.publish(mqtt_topic, statusEstoque.c_str());
+        Serial.println("Estoque vazio. LED Vermelho aceso.");
+      }
+    } else {
+      // Nenhuma caixa ou leitura inválida
+      digitalWrite(ledBranco, LOW);
+      digitalWrite(ledVermelho, LOW);
+      if (statusEstoque != "Nenhuma caixa detectada") {
+        statusEstoque = "Nenhuma caixa detectada";
+        client.publish(mqtt_topic, statusEstoque.c_str());
+        Serial.println("Nenhuma caixa detectada ou leitura inválida.");
+      }
+    }
+  } else {
+    Serial.println("Leitura inválida.");
+    digitalWrite(ledBranco, LOW);
+    digitalWrite(ledVermelho, LOW);
+  }
+
+  delay(1000); // Aguarda 1 segundo antes da próxima medição
+}
+
+void conectarMQTT() {
+  while (!client.connected()) {
+    Serial.println("Conectando ao MQTT Broker...");
+    if (client.connect("ESP32Client")) {
+      Serial.println("Conectado ao MQTT Broker!");
+      client.publish(mqtt_topic, "Dispositivo conectado ao broker MQTT!");
+    } else {
+      Serial.print("Falha ao conectar. Estado MQTT: ");
+      Serial.println(client.state());
+      delay(5000); // Aguarda 5 segundos antes de tentar novamente
+    }
+  }
+}
